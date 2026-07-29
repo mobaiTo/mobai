@@ -211,6 +211,1223 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;b
 
 <div class="toast" id="toast"></div>
 
-<script src="app.js"></script>
+<script>
+// ====== App State ======
+var DB_NAME = 'mobai_db';
+var DB_VER = 2;
+var db = null;
+var currentUser = null;
+var currentPage = 'home';
+var currentVisit = null;
+var locationCache = null;
+var photoData = {};
+
+// ====== IndexedDB ======
+function openDB() {
+  return new Promise(function(resolve, reject) {
+    var req = indexedDB.open(DB_NAME, DB_VER);
+    req.onupgradeneeded = function(e) {
+      var d = e.target.result;
+      if (!d.objectStoreNames.contains('users')) {
+        var us = d.createObjectStore('users', { keyPath: 'phone' });
+        us.createIndex('role', 'role', { unique: false });
+      }
+      if (!d.objectStoreNames.contains('checkins')) {
+        var cs = d.createObjectStore('checkins', { keyPath: 'id', autoIncrement: true });
+        cs.createIndex('phone', 'phone', { unique: false });
+        cs.createIndex('date', 'date', { unique: false });
+      }
+      if (!d.objectStoreNames.contains('posts')) {
+        var ps = d.createObjectStore('posts', { keyPath: 'id', autoIncrement: true });
+        ps.createIndex('phone', 'phone', { unique: false });
+      }
+      if (!d.objectStoreNames.contains('comments')) {
+        var cs = d.createObjectStore('comments', { keyPath: 'id', autoIncrement: true });
+        cs.createIndex('postId', 'postId', { unique: false });
+      }
+      if (!d.objectStoreNames.contains('likes')) {
+        var ls = d.createObjectStore('likes', { keyPath: 'id', autoIncrement: true });
+        ls.createIndex('postId', 'postId', { unique: false });
+      }
+      if (!d.objectStoreNames.contains('resources')) {
+        var rs = d.createObjectStore('resources', { keyPath: 'id', autoIncrement: true });
+      }
+      if (!d.objectStoreNames.contains('adminCodes')) {
+        var ac = d.createObjectStore('adminCodes', { keyPath: 'code' });
+      }
+      if (!d.objectStoreNames.contains('visits')) {
+        var vs = d.createObjectStore('visits', { keyPath: 'id', autoIncrement: true });
+        vs.createIndex('phone', 'phone', { unique: false });
+        vs.createIndex('date', 'date', { unique: false });
+      }
+    };
+    req.onsuccess = function(e) { resolve(e.target.result); };
+    req.onerror = function(e) { reject(e.target.error); };
+  });
+}
+
+function dbAction(store, mode, fn) {
+  return new Promise(function(resolve, reject) {
+    var tx = db.transaction(store, mode);
+    var s = tx.objectStore(store);
+    fn(s, resolve, reject);
+    tx.oncomplete = function() { resolve(); };
+    tx.onerror = function(e) { reject(e.target.error); };
+  });
+}
+
+// ====== Toast ======
+function showToast(msg) {
+  var t = document.getElementById('toast');
+  t.textContent = msg;
+  t.classList.add('show');
+  setTimeout(function() { t.classList.remove('show'); }, 2500);
+}
+
+// ====== Geo Location ======
+function getLocation() {
+  return new Promise(function(resolve) {
+    if (locationCache) { resolve(locationCache); return; }
+    if (!navigator.geolocation) { resolve(null); return; }
+    navigator.geolocation.getCurrentPosition(function(pos) {
+      locationCache = { lat: pos.coords.latitude, lng: pos.coords.longitude };
+      resolve(locationCache);
+    }, function() { resolve(null); }, { timeout: 5000, enableHighAccuracy: true });
+  });
+}
+
+// ====== Auth ======
+function showRegister() {
+  document.getElementById('login-form').style.display = 'none';
+  document.getElementById('register-form').style.display = 'block';
+}
+function showLogin() {
+  document.getElementById('login-form').style.display = 'block';
+  document.getElementById('register-form').style.display = 'none';
+}
+var smsTimer = null;
+function sendSmsCode() {
+  var phone = document.getElementById('reg-phone').value.trim();
+  if (phone.length < 11) return showToast('请输入正确的手机号');
+  var btn = document.getElementById('smsBtn');
+  if (btn.disabled) return;
+  var code = String(Math.floor(100000 + Math.random() * 900000));
+  sessionStorage.setItem('sms_code_'+phone, code);
+  showToast('验证码已发送：' + code + '（模拟，正式上线对接短信服务商）');
+  btn.disabled = true;
+  var sec = 60;
+  btn.textContent = sec + 's';
+  smsTimer = setInterval(function() {
+    sec--;
+    btn.textContent = sec + 's';
+    if (sec <= 0) { clearInterval(smsTimer); btn.disabled = false; btn.textContent = '发送验证码'; }
+  }, 1000);
+}
+async function register() {
+  var name = document.getElementById('reg-name').value.trim();
+  var phone = document.getElementById('reg-phone').value.trim();
+  var idNum = document.getElementById('reg-id').value.trim();
+  var pwd = document.getElementById('reg-pwd').value;
+  var role = document.getElementById('reg-role').value;
+  if (!name || !phone || !idNum || !pwd) return showToast('请填写完整信息');
+  if (phone.length < 11) return showToast('手机号格式不对');
+  var smsCode = document.getElementById('reg-sms').value.trim();
+  var storedSms = sessionStorage.getItem('sms_code_'+phone);
+  if (!smsCode || smsCode !== storedSms) return showToast('短信验证码错误，请重新获取');
+  if (idNum.length < 18) return showToast('身份证号格式不对');
+  if (pwd.length < 6) return showToast('密码不少于6位');
+  try {
+    var existing = await dbAction('users', 'readonly', function(s, ok) {
+      var r = s.get(phone);
+      r.onsuccess = function() { ok(r.result); };
+    });
+    if (existing) return showToast('该手机号已注册');
+    var user = { phone: phone, name: name, idNumber: idNum, password: pwd, role: role,
+      createdAt: new Date().toISOString(), totalVisits: 0, totalEarnings: 0 };
+    await dbAction('users', 'readwrite', function(s) { s.add(user); });
+    showToast('注册成功！请登录');
+    showLogin();
+    document.getElementById('login-phone').value = phone;
+  } catch(e) { showToast('注册失败: ' + e.message); }
+}
+
+async function login() {
+  var phone = document.getElementById('login-phone').value.trim();
+  var pwd = document.getElementById('login-pwd').value;
+  if (!phone || !pwd) return showToast('请填写手机号和密码');
+  try {
+    var user = await dbAction('users', 'readonly', function(s, ok) {
+      var r = s.get(phone);
+      r.onsuccess = function() { ok(r.result); };
+    });
+    if (!user) return showToast('账号不存在');
+    if (user.password !== pwd) return showToast('密码错误');
+    currentUser = user;
+    localStorage.setItem('mobai_user', JSON.stringify({phone:user.phone,name:user.name,role:user.role}));
+    document.getElementById('splash').classList.add('hide');
+    document.getElementById('auth-page').classList.remove('active');
+    document.getElementById('main-layout').classList.add('active');
+    document.getElementById('userName').textContent = user.name;
+    document.getElementById('userRole').textContent = user.role === 'admin' ? '管理者' : '陌拜员';
+    if (user.role === 'admin') showAdminTab();
+    renderHome();
+  } catch(e) { showToast('登录失败: ' + e.message); }
+}
+
+function showAdminTab() {
+  // Admin tab is accessible from tab bar
+}
+
+// ====== Tab System ======
+function switchTab(tab) {
+  currentPage = tab;
+  document.querySelectorAll('.tab-item').forEach(function(t) {
+    t.classList.toggle('active', t.dataset.tab === tab);
+  });
+  document.getElementById('backBtn').classList.remove('show');
+  var titles = { home: '陌拜通', checkin: '每日签到', visit: '陌拜上报', records: '工作记录', moments: '工作圈', library: '学习库', profile: '个人中心', admin: '管理后台' };
+  document.getElementById('pageTitle').textContent = titles[tab] || '陌拜通';
+  if (tab === 'home') renderHome();
+  else if (tab === 'checkin') renderCheckin();
+  else if (tab === 'visit') renderVisitForm();
+  else if (tab === 'records') renderRecords();
+  else if (tab === 'profile') renderProfile();
+  else if (tab === 'admin') renderAdmin();
+  else if (tab === 'moments') renderMoments();
+  else if (tab === 'library') renderLibrary();
+}
+
+function goBack() {
+  document.getElementById('backBtn').classList.remove('show');
+  if (currentPage==="worker-detail"||currentPage==="visit-detail"||currentPage==="filtered-records"||currentPage==="admin-filter") { switchTab("admin"); return; }
+  switchTab(currentPage);
+}
+
+// ====== Render: Home ======
+async function renderHome() {
+  var content = document.getElementById('mainContent');
+  var today = new Date().toISOString().split('T')[0];
+  var visits = await dbAction('visits', 'readonly', function(s, ok) {
+    var r = s.getAll();
+    r.onsuccess = function() { ok(r.result || []); };
+  });
+  var myVisits = (visits||[]).filter(function(v) { return v.phone === currentUser.phone; });
+  var todayVisits = myVisits.filter(function(v) { return v.date === today; });
+  var weekVisits = myVisits.filter(function(v) {
+    var d = new Date(v.date);
+    var now = new Date();
+    var weekAgo = new Date(now.getTime() - 7*24*60*60*1000);
+    return d >= weekAgo;
+  });
+  var totalEarnings = myVisits.reduce(function(s, v) { return s + (v.earnings||0); }, 0);
+
+  var html = '<div class="card"><h3>📊 工作概览</h3><div class="stat-row">'+
+    '<div class="stat-item" style="cursor:pointer" onclick="filterRecords(&apos;all&apos;)"><div class="num">'+myVisits.length+'</div><div class="lbl">累计陌拜</div></div>'+
+    '<div class="stat-item" style="cursor:pointer" onclick="filterRecords(&apos;today&apos;)"><div class="num">'+todayVisits.length+'</div><div class="lbl">今日陌拜</div></div>'+
+    '<div class="stat-item" style="cursor:pointer" onclick="filterRecords(&apos;week&apos;)"><div class="num">'+weekVisits.length+'</div><div class="lbl">本周陌拜</div></div>'+
+    '<div class="stat-item"><div class="num">'+totalEarnings.toFixed(1)+'</div><div class="lbl">总收入(元)</div></div>'+
+  '</div></div>';
+
+  // Check-in status
+  var checkedIn = await dbAction('checkins', 'readonly', function(s, ok) {
+    var idx = s.index('phone');
+    var r = idx.getAll(IDBKeyRange.only(currentUser.phone));
+    r.onsuccess = function() {
+      var list = (r.result||[]).filter(function(c) { return c.date === today; });
+      ok(list.length > 0);
+    };
+  });
+  if (checkedIn) {
+    html += '<div class="checkin-btn done"><div class="icon">✅</div><div class="info"><div class="title">今日已签到</div><div class="sub">'+today+'</div></div></div>';
+  } else {
+    html += '<div class="checkin-btn ready" onclick="doCheckin()"><div class="icon">📍</div><div class="info"><div class="title">点击签到打卡</div><div class="sub">记录当前位置，开始今天的工作</div></div><div style="font-size:12px">去签到 →</div></div>';
+  }
+
+  // Quick actions
+  html += '<div class="card"><h3>⚡ 快捷操作</h3>'+
+    '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">'+
+    '<button class="btn btn-primary btn-sm" onclick="switchTab(\'visit\')">📝 新建陌拜</button>'+
+    '<button class="btn btn-outline btn-sm" onclick="switchTab(\'records\')">📋 查看记录</button>'+
+    (currentUser.role === 'admin' ? '<button class="btn btn-success btn-sm" onclick="switchTab(\'admin\')">📊 管理后台</button>' : '')+
+    '</div></div>';
+
+  // Recent visits
+  html += '<div class="card"><h3>最近陌拜</h3>';
+  var recent = myVisits.slice(-5).reverse();
+  if (recent.length === 0) {
+    html += '<div class="empty-state"><div class="icon">📭</div><p>还没有陌拜记录<br>点击上方「新建陌拜」开始</p></div>';
+  } else {
+    recent.forEach(function(v) {
+      var intents = {S:'强烈',A:'有意向',B:'一般',C:'拒绝'};
+      html += '<div class="visit-item" style="margin-bottom:6px;padding:10px">'+
+        '<div class="v-name">'+(v.surname||'')+'总 · '+escHtml(v.storeName)+'</div>'+
+        '<div class="v-addr">'+escHtml(v.storeAddr)+'</div>'+
+        '<div class="v-meta"><span class="v-tag '+(v.intent||'b').toLowerCase()+'">'+(intents[v.intent]||'一般')+'</span>'+
+        '<span class="v-tag">💰 '+(v.earnings||0).toFixed(1)+'元</span>'+
+        '<span class="v-tag">📸 '+(v.photosCount||0)+'张</span></div></div>';
+    });
+  }
+  html += '</div>';
+  content.innerHTML = html;
+}
+// ====== Check-in ======
+async function renderCheckin() {
+  var content = document.getElementById('mainContent');
+  var today = new Date().toISOString().split('T')[0];
+  var checkedIn = await dbAction('checkins', 'readonly', function(s, ok) {
+    var idx = s.index('phone');
+    var r = idx.getAll(IDBKeyRange.only(currentUser.phone));
+    r.onsuccess = function() {
+      var list = (r.result||[]).filter(function(c) { return c.date === today; });
+      ok(list.length > 0);
+    };
+  });
+
+  var now = new Date();
+  var timeStr = now.toLocaleString('zh-CN', { hour12: false });
+  
+  var html = '<div class="card" style="text-align:center;padding:24px">';
+  if (checkedIn) {
+    html += '<div style="font-size:48px;margin-bottom:10px">✅</div>'+
+      '<h3 style="font-size:18px;margin-bottom:4px">今日已签到</h3>'+
+      '<p style="color:var(--text2);font-size:12px">'+today+'</p>'+
+      '<div style="margin-top:12px;padding:8px;background:#f5f5f5;border-radius:8px;font-size:12px;color:#666">'+
+      '签到时间：'+timeStr+'</div>';
+  } else {
+    html += '<div style="font-size:48px;margin-bottom:10px">📍</div>'+
+      '<h3 style="font-size:18px;margin-bottom:4px">今日还未签到</h3>'+
+      '<p style="color:var(--text2);font-size:12px">签到后将开始记录今天的工作</p>'+
+      '<button class="btn btn-success" style="margin-top:16px" onclick="doCheckin()">📍 立即签到打卡</button>';
+  }
+  html += '</div>';
+
+  // Show check-in history
+  html += '<div class="card"><h3>签到记录</h3>';
+  var allCheckins = await dbAction('checkins', 'readonly', function(s, ok) {
+    var idx = s.index('phone');
+    var r = idx.getAll(IDBKeyRange.only(currentUser.phone));
+    r.onsuccess = function() { ok(r.result || []); };
+  });
+  var recent = (allCheckins||[]).sort(function(a,b) { return b.date.localeCompare(a.date); }).slice(0,14);
+  if (recent.length === 0) {
+    html += '<div class="empty-state"><p>暂无签到记录</p></div>';
+  } else {
+    recent.forEach(function(c) {
+      var d = new Date(c.date);
+      var weekdays = ['日','一','二','三','四','五','六'];
+      html += '<div style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid #f0f0f0">'+
+        '<div style="font-size:20px">✅</div>'+
+        '<div style="flex:1"><div style="font-size:13px;font-weight:500">'+(c.date||'')+' 周'+weekdays[d.getDay()]+'</div>'+
+        '<div style="font-size:10px;color:#888">'+c.time+'</div></div></div>';
+    });
+  }
+  html += '</div>';
+  content.innerHTML = html;
+}
+
+async function doCheckin() {
+  locationCache = null;
+  showToast('正在获取GPS位置...');
+  var loc = await getLocation();
+  if (!loc) { showToast('无法获取位置，请打开手机GPS定位权限后重试'); return; }
+  var today = new Date().toISOString().split('T')[0];
+  var now = new Date();
+  var timeStr = now.toLocaleString('zh-CN', { hour12: false });
+  try {
+    await dbAction('checkins', 'readwrite', function(s) {
+      s.add({ phone: currentUser.phone, date: today, time: timeStr, 
+        location: loc, timestamp: now.toISOString() });
+    });
+    showToast('✅ 签到成功！');
+    if (currentPage === 'home') renderHome();
+    else renderCheckin();
+  } catch(e) { showToast('签到失败'); }
+}
+
+// ====== Visit Form ======
+function renderVisitForm() {
+  var content = document.getElementById('mainContent');
+  photoData = {};
+  var html = 
+  '<div class="form-section"><h3>📍 店铺信息</h3>'+
+  '<div class="field"><label><span class="req">*</span> 店铺名称</label><input type="text" id="v-name" placeholder="例：丽颜美容SPA馆"></div>'+
+  '<div class="field"><label><span class="req">*</span> 店铺地址</label><input type="text" id="v-addr" placeholder="例：金水区花园路XX号"></div>'+
+  '<div class="field"><label>店铺类型</label><select id="v-type">'+
+    '<option value="">请选择</option><option>美容院</option><option>养生馆</option><option>减肥店</option>'+
+    '<option>斑敏痘问题肌</option><option>洗脸吧</option><option>养发护发馆</option><option>SPA馆</option>'+
+    '<option>美甲美睫店</option><option>艾灸养生馆</option><option>其它</option></select></div></div>'+
+
+  '<div class="form-section"><h3>👤 联系人</h3>'+
+  '<div class="field"><label><span class="req">*</span> 老板姓</label><input type="text" id="v-surname" placeholder="例：王"></div>'+
+  '<div class="field"><label>老板全名</label><input type="text" id="v-fullname" placeholder="知道的话填上"></div>'+
+  '<div class="field"><label><span class="req">*</span> 老板电话</label><input type="tel" id="v-phone" placeholder="11位手机号" maxlength="11"></div>'+
+  '<div class="field"><label>微信号</label><input type="text" id="v-wechat" placeholder="选填"></div></div>'+
+
+  '<div class="form-section"><h3>📸 照片采集</h3>'+
+  '<div class="photo-grid" id="photoGrid">'+
+    '<div class="photo-slot" id="photo-door" onclick="takePhoto(\'door\')"><span style="font-size:24px">📷</span><span class="slot-label">门头</span></div>'+
+    '<div class="photo-slot" id="photo-near" onclick="takePhoto(\'near\')"><span style="font-size:24px">📷</span><span class="slot-label">大门</span></div>'+
+    '<div class="photo-slot" id="photo-front" onclick="takePhoto(\'front\')"><span style="font-size:24px">📷</span><span class="slot-label">前台</span></div>'+
+    '<div class="photo-slot" id="photo-inside" onclick="takePhoto(\'inside\')"><span style="font-size:24px">📷</span><span class="slot-label">环境</span></div>'+
+  '</div></div>'+
+
+  '<div class="form-section"><h3>📝 陌拜情况</h3>'+
+  '<div class="field"><label>意向度</label><select id="v-intent">'+
+    '<option value="S">S - 强烈意向</option><option value="A">A - 有意向</option>'+
+    '<option value="B" selected>B - 一般</option><option value="C">C - 拒绝</option></select></div>'+
+  '<div class="field"><label>老板需求</label><div class="checkbox-group">'+
+    '<label><input type="checkbox" id="need-tuoke"> 拓客</label>'+
+    '<label><input type="checkbox" id="need-zhaopin"> 招聘</label>'+
+    '<label><input type="checkbox" id="need-yeji"> 做业绩</label>'+
+    '<label><input type="checkbox" id="need-xinpin"> 新品项</label></div></div>'+
+  '<div class="field"><label>微信二维码</label><select id="v-qrcode"><option value="0">未获取</option><option value="1">已拍照</option></select></div>'+
+  '<div class="field"><label>备注</label><textarea id="v-note" rows="3" style="width:100%;padding:8px;border:1.5px solid #e0e0e0;border-radius:8px;font-size:13px;resize:vertical;font-family:inherit" placeholder="员工数量、装修档次、聊天要点…"></textarea></div></div>'+
+
+  '<div class="form-section"><h3>💰 酬劳预览</h3>'+
+  '<div id="payPreview" style="padding:8px;background:#f5f5f5;border-radius:8px;font-size:12px;color:#666">填写完必填项后自动计算</div></div>'+
+
+  '<div style="display:flex;gap:8px;padding:0 0 16px">'+
+  '<button class="btn btn-primary" onclick="saveVisit()">💾 保存上报</button>'+
+  '<button class="btn btn-outline" onclick="resetVisitForm()">清空</button></div>';
+
+  content.innerHTML = html;
+  // Auto-calculate on input changes
+  ['v-name','v-addr','v-surname','v-phone','v-qrcode','photo-door','photo-near','photo-front','photo-inside'].forEach(function(id) {
+    var el = document.getElementById(id);
+    if (el) el.addEventListener('input', calcPay);
+  });
+}
+
+function takePhoto(slot, fromCamera) {
+  var input = document.createElement('input');
+  input.type = 'file';
+  input.accept = 'image/*';
+  if (fromCamera === true) input.capture = 'environment';
+  input.onchange = function(e) {
+    var file = e.target.files[0];
+    if (!file) return;
+    var reader = new FileReader();
+    reader.onload = function(ev) {
+      var el = document.getElementById('photo-'+slot);
+      photoData[slot] = ev.target.result;
+      el.innerHTML = '<img src="'+ev.target.result+'"><div class="check">✓</div>';
+      el.classList.add('has-photo');
+      calcPay();
+    };
+    reader.readAsDataURL(file);
+  };
+  input.click();
+}
+
+function calcPay() {
+  var el = document.getElementById('payPreview');
+  if (!el) return;
+  var hasName = document.getElementById('v-name') && document.getElementById('v-name').value.trim();
+  var hasAddr = document.getElementById('v-addr') && document.getElementById('v-addr').value.trim();
+  var hasSurname = document.getElementById('v-surname') && document.getElementById('v-surname').value.trim();
+  var hasPhone = document.getElementById('v-phone') && document.getElementById('v-phone').value.trim().length >= 11;
+  var photos = Object.keys(photoData).length;
+  var hasQR = document.getElementById('v-qrcode') && document.getElementById('v-qrcode').value === '1';
+
+  if (!hasName || !hasAddr || !hasSurname || !hasPhone) {
+    el.innerHTML = '⚠️ 请先填写完整的店铺信息（店名、地址、老板姓、电话）';
+    el.style.color = '#856404'; el.style.background = '#fff3cd';
+    return;
+  }
+  var pay = 4.0; // Basic
+  if (photos >= 4) pay = 5.0; // With all photos
+  else if (photos >= 2) pay = 4.5;
+  if (hasQR) pay += 0.3;
+  // Intent bonus
+  var intent = document.getElementById('v-intent');
+  if (intent) {
+    var iv = intent.value;
+    if (iv === 'S') pay += 0.5;
+    else if (iv === 'A') pay += 0.3;
+  }
+  el.innerHTML = '💰 <strong>'+pay.toFixed(2)+' 元</strong>'+
+    '<br><span style="font-size:10px">基础 '+ (photos>=4?'5.00':'4.00') +' 元'+
+    (hasQR?' + 二维码 0.30 元':'')+
+    (intent && intent.value==='S'?' + S级奖励 0.50 元':'')+
+    (intent && intent.value==='A'?' + A级奖励 0.30 元':'')+
+    ' | 照片 '+photos+' 张</span>';
+  el.style.color = '#155724'; el.style.background = '#d4edda';
+  return pay;
+}
+
+async function saveVisit() {
+  if (currentEditId) {
+    try { await dbAction("visits","readwrite",function(s){s.delete(currentEditId);}); } catch(e) {}
+    currentEditId = null;
+  }
+  // Duplicate check: same store name+address by any user
+  var name = document.getElementById("v-name").value.trim();
+  var addr = document.getElementById("v-addr").value.trim();
+  if (name && addr) {
+    var allVisits = await dbAction("visits","readonly",function(s,ok){var r=s.getAll();r.onsuccess=function(){ok(r.result||[]);};});
+    var dup = null;
+    for (var i=0;i<allVisits.length;i++) {
+      var v = allVisits[i];
+      if (v.storeName===name && v.storeAddr===addr && v.phone!==currentUser.phone) {
+        dup = v; break;
+      }
+    }
+    if (dup) {
+      if (!confirm("⚠️ 该店铺已被 "+dup.userName+" 于 "+dup.date+" 陌拜过！\n继续保存将不计酬劳。确定保存吗？")) { return; }
+      // Force earnings to 0 for duplicate
+      setTimeout(function(){
+        var payEl = document.getElementById("payPreview");
+        if (payEl) { payEl.innerHTML = "⚠️ 重复店铺，酬劳为 0 元"; payEl.style.background="#f8d7da"; payEl.style.color="#721c24"; }
+      }, 100);
+    }
+  }
+  var name = document.getElementById('v-name').value.trim();
+  var addr = document.getElementById('v-addr').value.trim();
+  var surname = document.getElementById('v-surname').value.trim();
+  var phone = document.getElementById('v-phone').value.trim();
+  if (!name || !addr || !surname || !phone) return showToast('请填写必填信息');
+  if (phone.length < 11) return showToast('电话格式不对');
+
+  var needs = [];
+  if (document.getElementById('need-tuoke').checked) needs.push('拓客');
+  if (document.getElementById('need-zhaopin').checked) needs.push('招聘');
+  if (document.getElementById('need-yeji').checked) needs.push('做业绩');
+  if (document.getElementById('need-xinpin').checked) needs.push('新品项');
+
+  var loc = await getLocation();
+  var pay = calcPay();
+  if (typeof pay !== 'number') pay = 4.0;
+
+  var visit = {
+    phone: currentUser.phone, userName: currentUser.name,
+    date: new Date().toISOString().split('T')[0],
+    time: new Date().toLocaleString('zh-CN', {hour12:false}),
+    storeName: name, storeAddr: addr, storeType: document.getElementById('v-type').value,
+    surname: surname, fullname: document.getElementById('v-fullname').value.trim(),
+    contactPhone: phone, wechat: document.getElementById('v-wechat').value.trim(),
+    intent: document.getElementById('v-intent').value,
+    needs: needs, qrcode: document.getElementById('v-qrcode').value,
+    photos: JSON.stringify(photoData),
+    photosCount: Object.keys(photoData).length,
+    note: document.getElementById('v-note').value.trim(),
+    earnings: pay, location: loc,
+    timestamp: new Date().toISOString()
+  };
+
+  try {
+    await dbAction('visits', 'readwrite', function(s) { s.add(visit); });
+    // Update user stats
+    var user = await dbAction('users', 'readonly', function(s, ok) {
+      var r = s.get(currentUser.phone); r.onsuccess = function() { ok(r.result); };
+    });
+    user.totalVisits = (user.totalVisits||0) + 1;
+    user.totalEarnings = (user.totalEarnings||0) + pay;
+    await dbAction('users', 'readwrite', function(s) { s.put(user); });
+    currentUser = user;
+    
+    showToast('✅ 上报成功！本次酬劳 '+pay.toFixed(2)+' 元');
+    resetVisitForm();
+    switchTab('records');
+  } catch(e) { showToast('保存失败'); }
+}
+
+function resetVisitForm() {
+  photoData = {};
+  renderVisitForm();
+}
+// ====== Records ======
+async function renderRecords() {
+  var content = document.getElementById('mainContent');
+  var visits = await dbAction('visits', 'readonly', function(s, ok) {
+    var idx = s.index('phone');
+    var r = idx.getAll(IDBKeyRange.only(currentUser.phone));
+    r.onsuccess = function() { ok(r.result || []); };
+  });
+  var sorted = (visits||[]).sort(function(a,b) { return b.timestamp.localeCompare(a.timestamp); });
+
+  var html = '<div class="card"><h3>📋 陌拜记录（共 '+sorted.length+' 条）</h3>';
+  var totalPay = sorted.reduce(function(s,v) { return s+(v.earnings||0); }, 0);
+  html += '<div style="font-size:12px;color:var(--text2)">累计酬劳：<strong style="color:var(--success)">'+totalPay.toFixed(2)+' 元</strong></div></div>';
+
+  if (sorted.length === 0) {
+    html += '<div class="empty-state"><div class="icon">📭</div><p>还没有陌拜记录</p></div>';
+  } else {
+    var intents = {S:'强烈',A:'有意向',B:'一般',C:'拒绝'};
+    sorted.forEach(function(v) {
+      html += '<div class="visit-item" style="cursor:pointer" onclick="viewVisitDetail('+v.id+')">'+
+        '<div class="v-name">'+(v.surname||'')+'总 · '+escHtml(v.storeName)+'</div>'+
+        '<div class="v-addr">'+escHtml(v.storeAddr)+'</div>'+
+        '<div class="v-meta"><span class="v-tag '+(v.intent||'b').toLowerCase()+'">'+(intents[v.intent]||'一般')+'</span>'+
+        '<span class="v-tag">💰 '+(v.earnings||0).toFixed(2)+'元</span>'+
+        '<span class="v-tag">📸 '+(v.photosCount||0)+'张</span>'+
+        (v.wechat?'<span class="v-tag" style="background:#d4edda;color:#155724">📱 已加微信</span>':'')+
+        '</div><div style="font-size:10px;color:#aaa;margin-top:4px">'+v.date+' '+v.time+'</div>'+
+        '<div class="v-pay">💰'+(v.earnings||0).toFixed(1)+'</div></div>';
+    });
+  }
+  content.innerHTML = html;
+
+  // Add export button
+  html += '<div class="card" style="text-align:center">'+
+    '<button class="btn btn-outline btn-sm" onclick="exportData()" style="display:inline-block;width:auto;padding:8px 20px">📤 导出数据</button>'+
+    '<button class="btn btn-outline btn-sm" onclick="importData()" style="display:inline-block;width:auto;padding:8px 20px;margin-left:8px">📥 导入数据</button></div>';
+  content.innerHTML = html;
+}
+
+function escHtml(s) { if(!s)return ''; return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+
+function exportData() {
+  var data = { exportDate: new Date().toISOString(), visits: [] };
+  dbAction('visits', 'readonly', function(s, ok) {
+    var r = s.getAll();
+    r.onsuccess = function() {
+      data.visits = (r.result||[]).filter(function(v) { return v.phone === currentUser.phone; });
+      var blob = new Blob([JSON.stringify(data, null, 2)], {type:'application/json'});
+      var url = URL.createObjectURL(blob);
+      var a = document.createElement('a');
+      a.href = url; a.download = '陌拜数据_'+currentUser.name+'_'+new Date().toISOString().split('T')[0]+'.json';
+      a.click();
+      URL.revokeObjectURL(url);
+      showToast('✅ 数据已导出');
+    };
+  });
+}
+
+function importData() {
+  var input = document.createElement('input');
+  input.type = 'file'; input.accept = '.json';
+  input.onchange = function(e) {
+    var file = e.target.files[0]; if (!file) return;
+    var reader = new FileReader();
+    reader.onload = async function(ev) {
+      try {
+        var data = JSON.parse(ev.target.result);
+        if (!data.visits || !Array.isArray(data.visits)) return showToast('数据格式不对');
+        var count = 0;
+        for (var v of data.visits) {
+          try { await dbAction('visits', 'readwrite', function(s) { s.add(v); }); count++; } catch(e) {}
+        }
+        showToast('✅ 导入 '+count+' 条记录');
+        renderRecords();
+      } catch(e) { showToast('导入失败'); }
+    };
+    reader.readAsText(file);
+  };
+  input.click();
+}
+
+// ====== Profile ======
+function renderProfile() {
+  var content = document.getElementById('mainContent');
+  var u = currentUser;
+  var html = 
+  '<div class="card" style="text-align:center;padding:24px">'+
+    '<div style="font-size:48px;margin-bottom:8px">👤</div>'+
+    '<h3 style="font-size:18px">'+escHtml(u.name)+'</h3>'+
+    '<p style="color:var(--text2);font-size:12px">'+(u.role==='admin'?'管理者':'陌拜员')+'</p></div>'+
+
+  '<div class="card"><h3>个人信息</h3>'+
+  '<div style="font-size:13px;line-height:2"><strong>手机号：</strong>'+u.phone.substring(0,3)+'****'+u.phone.substring(7)+
+  '<div style="font-size:13px;line-height:2"><strong>身份证：</strong>**** 已加密</div>'+
+  '<div style="font-size:13px;line-height:2"><strong>累计陌拜：</strong>'+(u.totalVisits||0)+' 家</div>'+
+  '<div style="font-size:13px;line-height:2"><strong>累计收入：</strong>💰 '+(u.totalEarnings||0).toFixed(2)+' 元</div>'+
+  '<div style="font-size:13px;line-height:2"><strong>注册时间：</strong>'+(u.createdAt||'').split('T')[0]+'</div></div>'+
+
+  '<div class="card"><h3>设置</h3>'+
+  '<button class="btn btn-danger btn-sm" onclick="logout()" style="margin-bottom:8px">退出登录</button>'+
+  '<p style="font-size:10px;color:#aaa">数据存储在手机本地，卸载或清除浏览器数据会丢失</p></div>';
+  content.innerHTML = html;
+}
+
+function logout() {
+  if (!confirm('确认退出登录？')) return;
+  currentUser = null;
+  localStorage.removeItem('mobai_user');
+  document.getElementById('main-layout').classList.remove('active');
+  document.getElementById('auth-page').classList.add('active');
+}
+
+// ====== Admin Dashboard ======
+async function renderAdmin() {
+  var content = document.getElementById('mainContent');
+  if (currentUser.role !== 'admin') {
+    content.innerHTML = '<div class="empty-state"><div class="icon">🔒</div><p>仅管理者可访问</p></div>';
+    return;
+  }
+
+  var visits = await dbAction('visits', 'readonly', function(s, ok) {
+    var r = s.getAll(); r.onsuccess = function() { ok(r.result || []); };
+  });
+  var users = await dbAction('users', 'readonly', function(s, ok) {
+    var r = s.getAll(); r.onsuccess = function() { ok(r.result || []); };
+  });
+  var checkins = await dbAction('checkins', 'readonly', function(s, ok) {
+    var r = s.getAll(); r.onsuccess = function() { ok(r.result || []); };
+  });
+
+  var today = new Date().toISOString().split('T')[0];
+  var workers = (users||[]).filter(function(u) { return u.role === 'worker'; });
+  var todayCheckins = (checkins||[]).filter(function(c) { return c.date === today; });
+  var todayVisits = (visits||[]).filter(function(v) { return v.date === today; });
+
+  var totalEarnings = (visits||[]).reduce(function(s,v) { return s+(v.earnings||0); }, 0);
+  var todayEarnings = todayVisits.reduce(function(s,v) { return s+(v.earnings||0); }, 0);
+
+  // Stats grid
+  var html = '<div class="admin-grid">'+
+    '<div class="card" style="text-align:center"><div class="num" style="font-size:28px;font-weight:700;color:var(--primary)">'+(visits||[]).length+'</div><div style="font-size:10px;color:#888">累计陌拜</div></div>'+
+    '<div class="card" style="text-align:center"><div class="num" style="font-size:28px;font-weight:700;color:var(--success)">'+todayVisits.length+'</div><div style="font-size:10px;color:#888">今日陌拜</div></div>'+
+    '<div class="card" style="text-align:center"><div class="num" style="font-size:28px;font-weight:700;color:var(--accent)">'+totalEarnings.toFixed(1)+'</div><div style="font-size:10px;color:#888">总收入(元)</div></div>'+
+    '<div class="card" style="text-align:center"><div class="num" style="font-size:28px;font-weight:700;color:var(--warning)">'+todayEarnings.toFixed(1)+'</div><div style="font-size:10px;color:#888">今日收入(元)</div></div>'+
+    '<div class="card" style="text-align:center"><div class="num" style="font-size:28px;font-weight:700;color:var(--success)">'+todayCheckins.length+'/'+workers.length+'</div><div style="font-size:10px;color:#888">今日签到</div></div>'+
+    '<div class="card" style="text-align:center"><div class="num" style="font-size:28px;font-weight:700;color:var(--primary)">'+workers.length+'</div><div style="font-size:10px;color:#888">陌拜员</div></div>'+
+  '</div>';
+
+  // Worker list
+  html += '<div class="card"><h3>👥 陌拜员状态</h3>';
+  if (workers.length === 0) {
+    html += '<p style="color:#aaa;font-size:12px">暂无陌拜员注册</p>';
+  } else {
+    workers.forEach(function(w) {
+      var wVisits = (visits||[]).filter(function(v) { return v.phone === w.phone; });
+      var wToday = wVisits.filter(function(v) { return v.date === today; });
+      var wChecked = todayCheckins.some(function(c) { return c.phone === w.phone; });
+      var wEarnings = wVisits.reduce(function(s,v) { return s+(v.earnings||0); }, 0);
+      var status = wChecked ? (wToday.length > 0 ? 'working' : 'online') : 'offline';
+      var statusText = wChecked ? (wToday.length > 0 ? '工作中' : '已签到') : '未签到';
+      html += '<div class="admin-worker">'+
+        '<span class="status-dot '+status+'"></span>'+
+        '<div class="w-info"><div class="w-name">'+escHtml(w.name)+'</div>'+
+        '<div class="w-stat">今日 '+wToday.length+' 家 | 累计 '+wVisits.length+' 家 | 💰'+wEarnings.toFixed(1)+'元</div></div>'+
+        '<div class="w-actions"><button class="btn btn-outline btn-sm" onclick="viewWorker(\''+w.phone+'\')">查看</button></div></div>';
+    });
+  }
+  html += '</div>';
+
+  // Recent activity
+  html += '<div class="card"><h3>📊 实时动态</h3>';
+  var recentVisits = (visits||[]).sort(function(a,b) { return b.timestamp.localeCompare(a.timestamp); }).slice(0,10);
+  recentVisits.forEach(function(v) {
+    var intents = {S:'强烈',A:'有意向',B:'一般',C:'拒绝'};
+    html += '<div class="visit-item" style="margin-bottom:6px;padding:10px">'+
+      '<div class="v-name">'+escHtml(v.userName||'')+' → '+(v.surname||'')+'总 · '+escHtml(v.storeName)+'</div>'+
+      '<div class="v-meta"><span class="v-tag '+(v.intent||'b').toLowerCase()+'">'+(intents[v.intent]||'一般')+'</span>'+
+      '<span class="v-tag">💰'+(v.earnings||0).toFixed(1)+'元</span>'+
+      '</div><div style="font-size:10px;color:#aaa;margin-top:2px">'+v.date+' '+v.time+'</div></div>';
+  });
+  html += '</div>';
+  // Duplicate store detection for admin
+  html += "<div class=\"card\"><h3>⚠️ 重复店铺检测</h3>";
+  var allV = visits;
+  var dupMap = {};
+  for (var i=0;i<allV.length;i++) {
+    var key = allV[i].storeName+"|"+allV[i].storeAddr;
+    if (!dupMap[key]) dupMap[key] = [];
+    dupMap[key].push(allV[i]);
+  }
+  var dupCount = 0;
+  for (var key in dupMap) {
+    if (dupMap[key].length > 1) {
+      dupCount++;
+      var items = dupMap[key];
+      html += "<div style=\"font-size:12px;padding:6px 0;border-bottom:1px solid #f0f0f0\">";
+      html += "⚠️ "+escHtml(items[0].storeName)+"<br>";
+      for (var j=0;j<items.length;j++) {
+        html += "<span style=\"color:#888;margin-left:8px\">"+items[j].userName+" "+items[j].date+" ¥"+(items[j].earnings||0).toFixed(1)+"</span><br>";
+      }
+      html += "</div>";
+    }
+  }
+  if (dupCount===0) html += "<p style=\"font-size:12px;color:#888\">暂未发现重复店铺</p>";
+  html += "</div>";
+  content.innerHTML = html;
+}
+
+
+async function adminFilter(type) {
+  document.getElementById("pageTitle").textContent = {all:"\u7d2f\u8ba1\u964c\u62dc",today:"\u4eca\u65e5\u964c\u62dc",checkins:"\u7b7e\u5230\u8bb0\u5f55",workers:"\u964c\u62dc\u5458"}[type]||"\u7ba1\u7406\u540e\u53f0";
+  document.getElementById("backBtn").classList.add("show");
+  currentPage = "admin-filter";
+  var users = await dbAction("users","readonly",function(s,ok){var r=s.getAll();r.onsuccess=function(){ok(r.result||[]);};});
+  var visits = await dbAction("visits","readonly",function(s,ok){var r=s.getAll();r.onsuccess=function(){ok(r.result||[]);};});
+  var checkins = await dbAction("checkins","readonly",function(s,ok){var r=s.getAll();r.onsuccess=function(){ok(r.result||[]);};});
+  var today = new Date().toISOString().split("T")[0];
+  var workers = users.filter(function(u){return u.role==="worker";});
+  var html = "";
+  if (type==="all") {
+    html += "<div class=\"card\"><h3>\u6240\u6709\u964c\u62dc\u5458\u7d2f\u8ba1\u6570\u636e</h3>";
+    workers.forEach(function(w){
+      var wv = visits.filter(function(v){return v.phone===w.phone;});
+      var total = wv.reduce(function(s,v){return s+(v.earnings||0);},0);
+      html += "<div style=\"display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid #f0f0f0;font-size:13px\"><span>"+escHtml(w.name)+"</span><span>\u964c\u62dc "+wv.length+"\u5bb6 | \u00a5"+total.toFixed(2)+"</span></div>";
+    });
+    html += "</div>";
+  } else if (type==="today") {
+    html += "<div class=\"card\"><h3>\u4eca\u65e5\u964c\u62dc\u7edf\u8ba1</h3>";
+    workers.forEach(function(w){
+      var wv = visits.filter(function(v){return v.phone===w.phone&&v.date===today;});
+      var total = wv.reduce(function(s,v){return s+(v.earnings||0);},0);
+      html += "<div style=\"display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid #f0f0f0;font-size:13px\"><span>"+escHtml(w.name)+"</span><span>\u4eca\u65e5 "+wv.length+"\u5bb6 | \u00a5"+total.toFixed(2)+"</span></div>";
+    });
+    html += "</div>";
+  } else if (type==="checkins") {
+    html += "<div class=\"card\"><h3>\u4eca\u65e5\u7b7e\u5230\u60c5\u51b5</h3>";
+    workers.forEach(function(w){
+      var checked = checkins.some(function(c){return c.phone===w.phone&&c.date===today;});
+      var loc = "";
+      var ck = checkins.filter(function(c){return c.phone===w.phone&&c.date===today;});
+      if (ck.length>0 && ck[0].location) loc = " ("+ck[0].location.lat.toFixed(2)+","+ck[0].location.lng.toFixed(2)+")";
+      html += "<div style=\"display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid #f0f0f0;font-size:13px\"><span>"+(checked?"\u2705":"\u274c")+" "+escHtml(w.name)+"</span><span style=\"color:#888;font-size:11px\">"+loc+"</span></div>";
+    });
+    html += "</div>";
+  } else if (type==="workers") {
+    html += "<div class=\"card\"><h3>\u6240\u6709\u964c\u62dc\u5458</h3>";
+    workers.forEach(function(w){
+      html += "<div style=\"display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-bottom:1px solid #f0f0f0;font-size:13px\"><span>"+escHtml(w.name)+"</span><button class=\"btn btn-sm btn-outline\" style=\"padding:4px 10px;font-size:11px\" onclick=\"viewWorker(\""+w.phone+"\")\">\u67e5\u770b\u8be6\u60c5</button></div>";
+    });
+    html += "</div>";
+  }
+  document.getElementById("mainContent").innerHTML = html;
+}
+async function showExpense(type) {
+  document.getElementById("pageTitle").textContent = type==="all"?"\u603b\u652f\u51fa":"\u4eca\u65e5\u652f\u51fa";
+  document.getElementById("backBtn").classList.add("show");
+  currentPage = "admin-filter";
+  var users = await dbAction("users","readonly",function(s,ok){var r=s.getAll();r.onsuccess=function(){ok(r.result||[]);};});
+  var visits = await dbAction("visits","readonly",function(s,ok){var r=s.getAll();r.onsuccess=function(){ok(r.result||[]);};});
+  var today = new Date().toISOString().split("T")[0];
+  var workers = users.filter(function(u){return u.role==="worker";});
+  var totalAll = 0;
+  var html = "<div class=\"card\"><h3>"+(type==="all"?"\u5386\u53f2\u652f\u51fa\u660e\u7ec6":"\u4eca\u65e5\u652f\u51fa\u660e\u7ec6")+"</h3>";
+  workers.forEach(function(w){
+    var wv = visits.filter(function(v){return v.phone===w.phone&&(type==="all"?true:v.date===today);});
+    var total = wv.reduce(function(s,v){return s+(v.earnings||0);},0);
+    totalAll += total;
+    html += "<div style=\"display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid #f0f0f0;font-size:13px\"><span>"+escHtml(w.name)+"</span><span style=\"color:var(--accent);font-weight:600\">\u00a5"+total.toFixed(2)+"</span></div>";
+  });
+  html += "<div style=\"display:flex;justify-content:space-between;padding:10px 0;font-size:15px;font-weight:700\"><span>\u5408\u8ba1</span><span style=\"color:var(--accent)\">\u00a5"+totalAll.toFixed(2)+"</span></div>";
+  html += "</div>";
+  document.getElementById("mainContent").innerHTML = html;
+}
+function viewWorker(phone) {
+  showToast('查看员工详情功能开发中');
+}
+
+// ====== Moments (Social Feed) ======
+async function renderMoments() {
+  var content = document.getElementById("mainContent");
+  var posts = await dbAction("posts","readonly",function(s,ok){var r=s.getAll();r.onsuccess=function(){ok((r.result||[]).sort(function(a,b){return b.timestamp.localeCompare(a.timestamp);}));};});
+  var comments = await dbAction("comments","readonly",function(s,ok){var r=s.getAll();r.onsuccess=function(){ok(r.result||[]);};});
+  var likes = await dbAction("likes","readonly",function(s,ok){var r=s.getAll();r.onsuccess=function(){ok(r.result||[]);};});
+  var html = "<div class=\"card\"><h3>🌐 工作圈</h3><p style=\"font-size:11px;color:#888\">分享工作动态，互相鼓励</p></div>";
+  html += "<div class=\"card\" style=\"text-align:center;padding:12px\"><button class=\"btn btn-primary btn-sm\" onclick=\"showPostModal()\" style=\"width:auto;padding:10px 24px\">📝 发动态</button></div>";
+  if (posts.length===0) {
+    html += "<div class=\"empty-state\"><div class=\"icon\">📭</div><p>还没有动态</p></div>";
+  } else {
+    posts.forEach(function(p){
+      var likeCount = likes.filter(function(l){return l.postId===p.id;}).length;
+      var postComments = comments.filter(function(c2){return c2.postId===p.id;});
+      var userLiked = likes.filter(function(l){return l.postId===p.id&&l.phone===currentUser.phone;}).length>0;
+      var timeStr = (p.timestamp||"").replace("T"," ").substring(0,16);
+      html += "<div class=\"card\" style=\"padding:14px\"><div style=\"display:flex;align-items:center;gap:8px;margin-bottom:8px\">"+
+        "<div style=\"width:32px;height:32px;border-radius:50%;background:var(--primary);color:#fff;display:flex;align-items:center;justify-content:center;font-size:14px\">"+(p.userName||"?")[0]+"</div>"+
+        "<div><div style=\"font-size:13px;font-weight:600\">"+escHtml(p.userName||"")+"</div><div style=\"font-size:10px;color:#888\">"+timeStr+"</div></div></div>"+
+        "<div style=\"font-size:13px;line-height:1.6;margin-bottom:8px\">"+escHtml(p.text||"")+"</div>";
+      // Images
+      if (p.images) {
+        try {
+          var imgs = JSON.parse(p.images);
+          if (imgs.length>0) {
+            html += "<div style=\"display:grid;grid-template-columns:repeat(3,1fr);gap:4px;margin-bottom:8px\">";
+            imgs.forEach(function(img){
+              html += "<div style=\"aspect-ratio:1;border-radius:6px;overflow:hidden;background:#f0f0f0;cursor:pointer\" onclick=\"showFullImage('"+img+"')\"><img src=\""+img+"\" style=\"width:100%;height:100%;object-fit:cover\"></div>";
+            });
+            html += "</div><button class=\"btn btn-outline btn-sm\" onclick=\"downloadFile('"+(imgs[0]||"")+"','工作圈图片')\" style=\"font-size:10px;padding:4px 8px;margin-bottom:6px\">⬇ 下载</button>";
+          }
+        } catch(e){}
+      }
+      // Likes & comments bar
+      html += "<div style=\"display:flex;gap:12px;padding:8px 0;border-top:1px solid #f0f0f0;border-bottom:1px solid #f0f0f0;font-size:13px\">"+
+        "<a style=\"cursor:pointer;color:"+(userLiked?"var(--accent)":"#888")+"\" onclick=\"toggleLike2("+p.id+")\">👍 "+(likeCount||0)+"</a>"+
+        "<a style=\"cursor:pointer;color:#888\" onclick=\"showComment2("+p.id+")\">💬 "+(postComments.length||0)+"</a></div>";
+      // Show comments inline
+      if (postComments.length>0) {
+        html += "<div style=\"margin-top:6px\">";
+        postComments.forEach(function(c2){
+          html += "<div style=\"font-size:12px;padding:4px 0;border-bottom:1px solid #f5f5f5\"><strong>"+escHtml(c2.userName||"")+"：</strong>"+escHtml(c2.text||"")+"</div>";
+        });
+        html += "</div>";
+      }
+      // Comment input
+      html += "<div style=\"display:flex;gap:6px;margin-top:6px\"><input type=\"text\" id=\"comment-input-"+p.id+"\" placeholder=\"写评论...\" style=\"flex:1;padding:6px 8px;border:1px solid #ddd;border-radius:6px;font-size:12px\"><button class=\"btn btn-sm btn-primary\" style=\"padding:6px 12px;width:auto\" onclick=\"submitComment("+p.id+")\">发送</button>"+(p.phone===currentUser.phone||currentUser.role==="admin"?"<button class=\"btn btn-sm btn-danger\" style=\"padding:6px 10px;margin-left:4px;font-size:10px\" onclick=\"deletePost("+p.id+")\">🗑 删除</button>":"")+"</div></div>";
+    });
+  }
+  content.innerHTML = html;
+}
+
+function showPostModal() {
+  var overlay = document.createElement('div');
+  overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:999;display:flex;align-items:center;justify-content:center;padding:20px';
+  overlay.innerHTML = '<div style="background:#fff;border-radius:12px;padding:16px;width:100%;max-width:360px">'+
+    '<h3 style="font-size:15px;margin-bottom:10px">发动态</h3>'+
+    '<textarea id="post-text" rows="4" style="width:100%;padding:8px;border:1.5px solid #ddd;border-radius:8px;font-size:13px;resize:vertical" placeholder="分享今天的工作感受..."></textarea>'+
+    '<div style="display:flex;gap:6px;margin:8px 0"><button class="btn btn-outline btn-sm" onclick="addPostImage()" style="flex:1">📷 添加图片</button></div>'+
+    '<div style="display:flex;gap:6px"><button class="btn btn-primary btn-sm" onclick="submitPost()" style="flex:1">发布</button>'+
+    '<button class="btn btn-outline btn-sm" onclick="this.parentElement.parentElement.parentElement.remove()" style="flex:1">取消</button></div></div>';
+  document.body.appendChild(overlay);
+}
+
+var postImages = [];
+function addPostImage() {
+  var input = document.createElement('input');
+  input.type = 'file'; input.accept = 'image/*'; input.multiple = true;
+  input.onchange = function(e) {
+    for (var i = 0; i < e.target.files.length; i++) {
+      var reader = new FileReader();
+      reader.onload = function(ev) { postImages.push(ev.target.result); };
+      reader.readAsDataURL(e.target.files[i]);
+    }
+  };
+  input.click();
+}
+
+async function submitPost() {
+  var text = document.getElementById('post-text').value.trim();
+  if (!text) { showToast('请输入内容'); return; }
+  try {
+    await dbAction('posts', 'readwrite', function(s) {
+      s.add({phone:currentUser.phone, userName:currentUser.name, text:text,
+        images:JSON.stringify(postImages), likeCount:0, commentCount:0,
+        timestamp:new Date().toISOString()});
+    });
+    postImages = [];
+    var overlay = document.querySelector('[style*="fixed"]');
+    if (overlay) overlay.remove();
+    showToast('发布成功！');
+    renderMoments();
+  } catch(e) { showToast('发布失败'); }
+}
+
+async function toggleLike2(postId) {
+  var existing = await dbAction('likes', 'readonly', function(s, ok) {
+    var idx = s.index('postId');
+    var r = idx.getAll(IDBKeyRange.only(postId));
+    r.onsuccess = function() { ok((r.result||[]).filter(function(l){return l.phone===currentUser.phone;})); };
+  });
+  if (existing.length > 0) {
+    await dbAction('likes', 'readwrite', function(s) { s.delete(existing[0].id); });
+  } else {
+    await dbAction('likes', 'readwrite', function(s) { s.add({postId:postId,phone:currentUser.phone,timestamp:new Date().toISOString()}); });
+  }
+  renderMoments();
+}
+
+function showComment2(postId) {
+  var text = prompt('输入评论内容：');
+  if (!text) return;
+  dbAction('comments', 'readwrite', function(s) {
+    s.add({postId:postId,phone:currentUser.phone,userName:currentUser.name,text:text,timestamp:new Date().toISOString()});
+  }).then(function() {
+    // Update comment count
+    dbAction('comments', 'readonly', function(s, ok) {
+      var idx = s.index('postId');
+      var r = idx.getAll(IDBKeyRange.only(postId));
+      r.onsuccess = function() {
+        var count = (r.result||[]).length;
+        dbAction('posts', 'readwrite', function(s2, ok2) {
+          var r2 = s2.get(postId);
+          r2.onsuccess = function() {
+            var p = r2.result;
+            if (p) { p.commentCount = count; s2.put(p); }
+          };
+        });
+      };
+    });
+    renderMoments();
+  });
+}
+
+// ====== Library (Resources) ======
+async function renderLibrary() {
+  var content = document.getElementById("mainContent");
+  var resources = await dbAction("resources","readonly",function(s,ok){var r=s.getAll();r.onsuccess=function(){ok((r.result||[]).sort(function(a,b){return b.timestamp.localeCompare(a.timestamp);}));};});
+  var html = "<div class=\"card\"><h3>📚 学习资料库</h3><p style=\"font-size:11px;color:#888\">管理者上传的项目资料，供团队成员学习查看</p></div>";
+  if (currentUser.role === "admin") {
+    html += "<div class=\"card\" style=\"text-align:center;padding:12px\"><button class=\"btn btn-primary btn-sm\" onclick=\"showResourceUpload()\" style=\"width:auto;padding:10px 24px\">📤 上传资料</button></div>";
+  }
+  if (resources.length === 0) {
+    html += "<div class=\"empty-state\"><div class=\"icon\">📚</div><p>暂无资料</p></div>";
+  } else {
+    resources.forEach(function(r){
+      var timeStr = (r.timestamp||"").replace("T"," ").substring(0,16);
+      html += "<div class=\"card\" style=\"padding:14px\">";
+      if (r.title) html += "<div style=\"font-size:14px;font-weight:600\">"+escHtml(r.title)+"</div>";
+      html += "<div style=\"font-size:11px;color:#888;margin:4px 0\">上传者："+escHtml(r.userName||"")+" | "+timeStr+"</div>";
+      if (r.desc) html += "<div style=\"font-size:12px;color:#555;margin:6px 0\">"+escHtml(r.desc)+"</div>";
+      if (r.type === "image" && r.data) {
+        html += "<img src=\""+r.data+"\" style=\"width:100%;border-radius:8px;margin-top:4px;cursor:pointer\" onclick=\"showFullImage('"+r.data+"')\">";
+        html += "<div style=\"margin-top:4px;display:flex;gap:6px\"><button class=\"btn btn-outline btn-sm\" onclick=\"downloadFile('"+r.data+"','资料图片')\" style=\"font-size:10px;padding:4px 8px\">⬇ 下载</button>";
+        if (currentUser.role === "admin") {
+          html += "<button class=\"btn btn-danger btn-sm\" onclick=\"deleteResource("+r.id+")\" style=\"font-size:10px;padding:4px 8px\">🗑 删除</button>";
+        }
+        html += "</div>";
+      } else if (r.type === "text" && r.data) {
+        html += "<div style=\"background:#f5f5f5;padding:10px;border-radius:6px;font-size:12px;margin-top:4px;white-space:pre-wrap\">"+escHtml(r.data||"")+"</div>";
+      }
+      html += "</div>";
+    });
+  }
+  content.innerHTML = html;
+}
+
+function deleteResource(id) {
+  if (!confirm("确认删除此资料？")) return;
+  dbAction("resources","readwrite",function(s){s.delete(id);}).then(function(){renderLibrary();showToast("已删除");});
+}
+
+function showResourceUpload() {
+  if (currentUser.role !== "admin") return showToast("仅管理者可上传");
+  var o = document.createElement("div");
+  o.style.cssText = "position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:999;display:flex;align-items:center;justify-content:center;padding:20px";
+  o.innerHTML = "<div style=\"background:#fff;border-radius:12px;padding:20px;width:100%;max-width:360px\">"+
+    "<h3 style=\"font-size:15px;margin-bottom:10px\">📤 上传资料</h3>"+
+    "<div style=\"text-align:center;padding:30px 20px;border:2px dashed #ddd;border-radius:8px;margin-bottom:10px;cursor:pointer\" onclick=\"pickLibFile()\">"+
+    "<div style=\"font-size:40px\">📷</div>"+
+    "<div style=\"font-size:13px;color:#888;margin-top:6px\">点击选择图片</div>"+
+    "<div style=\"font-size:11px;color:#aaa;margin-top:4px\">支持拍照 / 相册选取</div></div>"+
+    "<div class=\"field\"><input type=\"text\" id=\"res-title\" placeholder=\"标题（选填）\"></div>"+
+    "<div style=\"display:flex;gap:6px\"><button class=\"btn btn-primary btn-sm\" id=\"libUploadBtn\" onclick=\"submitLibResource()\" disabled style=\"flex:1\">上传</button>"+
+    "<button class=\"btn btn-outline btn-sm\" onclick=\"o.remove()\" style=\"flex:1\">取消</button></div></div>";
+  document.body.appendChild(o);
+}
+var libFileData = null;
+function pickLibFile() {
+  var inp = document.createElement("input");
+  inp.type = "file"; inp.accept = "image/*";
+  inp.onchange = function(e) {
+    if (!e.target.files[0]) return;
+    var r = new FileReader();
+    r.onload = function(ev) {
+      libFileData = ev.target.result;
+      var div = document.querySelector("[style*=\"dashed\"]");
+      if (div) { div.style.borderColor = "#27ae60"; div.style.background = "#f0fff4";
+        div.innerHTML = "<div style=\"font-size:30px\">✅</div><div style=\"font-size:13px;color:#27ae60\">已选择</div>"; }
+      document.getElementById("libUploadBtn").disabled = false;
+    };
+    r.readAsDataURL(e.target.files[0]);
+  };
+  inp.click();
+}
+async function submitLibResource() {
+  if (!libFileData) return showToast("请先选择文件");
+  var title = (document.getElementById("res-title").value||"").trim() || "资料";
+  await dbAction("resources","readwrite",function(s){
+    s.add({title:title,type:"image",data:libFileData,userName:currentUser.name,phone:currentUser.phone,timestamp:new Date().toISOString()});
+  });
+  libFileData = null;
+  var o = document.querySelector("[style*=\"fixed\"]");
+  if (o) o.remove();
+  showToast("上传成功");
+  renderLibrary();
+}function submitResource() {
+  if (!pendingResourceFile) { showToast("请先选择文件"); return; }
+  var title = document.getElementById("res-title").value.trim();
+  
+
+function submitComment(postId) {
+  var input = document.getElementById("comment-input-"+postId);
+  if (!input||!input.value.trim()) return;
+  var text = input.value.trim(); input.value = "";
+  dbAction("comments","readwrite",function(s){s.add({postId:postId,phone:currentUser.phone,userName:currentUser.name,text:text,timestamp:new Date().toISOString()});}).then(function(){renderMoments();});
+}
+
+function showFullImage(src) {
+  var o = document.createElement("div");
+  o.style.cssText = "position:fixed;inset:0;background:rgba(0,0,0,.9);z-index:9999;display:flex;align-items:center;justify-content:center;cursor:pointer";
+  o.innerHTML = "<img src='"+src+"' style='max-width:95%;max-height:95%;border-radius:8px'><div style='position:absolute;top:20px;right:20px;color:#fff;font-size:30px;cursor:pointer' onclick='this.parentElement.remove()'>X</div>";
+  o.onclick = function() { o.remove(); };
+  document.body.appendChild(o);
+}
+function downloadFile(src, name) {
+  var a = document.createElement("a"); a.href = src; a.download = name || "download"; a.click();
+}
+function filterRecords(type) {
+  currentPage = "filtered-records";
+  renderFilteredRecords(type);
+}
+async function renderFilteredRecords(type) {
+  document.getElementById("pageTitle").textContent = {all:"全部记录",today:"今日陌拜",week:"本周陌拜",lastweek:"上周陌拜",month:"本月陌拜",lastmonth:"上月陌拜"}[type]||"陌拜记录";
+  document.getElementById("backBtn").classList.add("show");
+  var allVisits = await dbAction("visits","readonly",function(s,ok){var r=s.getAll();r.onsuccess=function(){ok(r.result||[]);};});
+  var myVisits = allVisits.filter(function(v){return v.phone===currentUser.phone;});
+  var now = new Date();
+  var today = now.toISOString().split("T")[0];
+  var weekStart = new Date(now); weekStart.setDate(now.getDate()-now.getDay());
+  weekStart = weekStart.toISOString().split("T")[0];
+  var lastWeekStart = new Date(now); lastWeekStart.setDate(now.getDate()-now.getDay()-7);
+  lastWeekStart = lastWeekStart.toISOString().split("T")[0];
+  var monthStart = new Date(now.getFullYear(),now.getMonth(),1).toISOString().split("T")[0];
+  var lastMonthStart = new Date(now.getFullYear(),now.getMonth()-1,1).toISOString().split("T")[0];
+  var lastMonthEnd = new Date(now.getFullYear(),now.getMonth(),0).toISOString().split("T")[0];
+  var filtered = [];
+  if (type==="today") filtered = myVisits.filter(function(v){return v.date===today;});
+  else if (type==="week") filtered = myVisits.filter(function(v){return v.date>=weekStart;});
+  else if (type==="lastweek") filtered = myVisits.filter(function(v){return v.date>=lastWeekStart&&v.date<weekStart;});
+  else if (type==="month") filtered = myVisits.filter(function(v){return v.date>=monthStart;});
+  else if (type==="lastmonth") filtered = myVisits.filter(function(v){return v.date>=lastMonthStart&&v.date<=lastMonthEnd;});
+  else filtered = myVisits;
+  filtered.sort(function(a,b){return b.timestamp.localeCompare(a.timestamp);});
+  var intents = {S:"强烈",A:"有意向",B:"一般",C:"拒绝"};
+  var totalPay = filtered.reduce(function(s,v){return s+(v.earnings||0);},0);
+  var html = "<div class=\"card\"><div style=\"display:flex;gap:6px;flex-wrap:wrap\">"+
+    "<button class=\"btn btn-sm "+(type==="all"?"btn-primary":"btn-outline")+"\" onclick=\"filterRecords(\'all\')\" style=\"flex:1;min-width:50px;padding:6px;font-size:11px\">全部</button>"+
+    "<button class=\"btn btn-sm "+(type==="today"?"btn-primary":"btn-outline")+"\" onclick=\"filterRecords(\'today\')\" style=\"flex:1;min-width:50px;padding:6px;font-size:11px\">今日</button>"+
+    "<button class=\"btn btn-sm "+(type==="week"?"btn-primary":"btn-outline")+"\" onclick=\"filterRecords(\'week\')\" style=\"flex:1;min-width:50px;padding:6px;font-size:11px\">本周</button>"+
+    "<button class=\"btn btn-sm "+(type==="lastweek"?"btn-primary":"btn-outline")+"\" onclick=\"filterRecords(\'lastweek\')\" style=\"flex:1;min-width:50px;padding:6px;font-size:11px\">上周</button>"+
+    "<button class=\"btn btn-sm "+(type==="month"?"btn-primary":"btn-outline")+"\" onclick=\"filterRecords(\'month\')\" style=\"flex:1;min-width:50px;padding:6px;font-size:11px\">本月</button>"+
+    "<button class=\"btn btn-sm "+(type==="lastmonth"?"btn-primary":"btn-outline")+"\" onclick=\"filterRecords(\'lastmonth\')\" style=\"flex:1;min-width:50px;padding:6px;font-size:11px\">上月</button>"+
+    "</div><div style=\"margin-top:8px;font-size:12px;color:#888\">共 "+filtered.length+" 条，酬劳 ¥"+totalPay.toFixed(2)+"</div></div>";
+  if (filtered.length===0) {
+    html += "<div class=\"empty-state\"><div class=\"icon\">\U0001f4ed</div><p>暂无记录</p></div>";
+  } else {
+    filtered.forEach(function(v){
+      html += "<div class=\"visit-item\" style=\"cursor:pointer\" onclick=\"viewVisitDetail("+v.id+")\"><div class=\"v-name\">"+(v.surname||"")+"总·"+escHtml(v.storeName)+"</div>"+
+        "<div class=\"v-addr\">"+escHtml(v.storeAddr)+"</div>"+
+        "<div class=\"v-meta\"><span class=\"v-tag "+(v.intent||"b").toLowerCase()+"\">"+(intents[v.intent]||"一般")+"</span>"+
+        "<span class=\"v-tag\">¥"+(v.earnings||0).toFixed(1)+"</span>"+
+        "<span class=\"v-tag\">"+v.date+"</span></div></div>";
+    });
+  }
+  document.getElementById("mainContent").innerHTML = html;
+}
+var currentEditId = null;
+async function editVisit(id) {
+  currentEditId = id;
+  switchTab("visit");
+  // Wait for form to render, then fill fields
+  await new Promise(function(ok) { setTimeout(ok, 600); });
+  var visits = await dbAction("visits", "readonly", function(s, ok) {
+    var r = s.get(id); r.onsuccess = function() { ok(r.result); };
+  });
+  if (!visits) { showToast("记录不存在"); return; }
+  // Fill form with existing data - use correct hyphen IDs
+  var map = [
+    ["v-name",visits.storeName],
+    ["v-addr",visits.storeAddr],
+    ["v-type",visits.storeType],
+    ["v-surname",visits.surname],
+    ["v-fullname",visits.fullname],
+    ["v-phone",visits.contactPhone],
+    ["v-wechat",visits.wechat],
+    ["v-intent",visits.intent||"B"],
+    ["v-qrcode",visits.qrcode||"0"],
+    ["v-note",visits.note]
+  ];
+  map.forEach(function(pair) {
+    var el = document.getElementById(pair[0]);
+    if (el) el.value = pair[1]||"";
+  });
+  // Check needs
+  var needs = visits.needs||[];
+  var checks = [
+    ["need-tuoke","拓客"],
+    ["need-zhaopin","招聘"],
+    ["need-yeji","做业绩"],
+    ["need-xinpin","新品项"]
+  ];
+  checks.forEach(function(pair) {
+    var el = document.getElementById(pair[0]);
+    if (el) el.checked = needs.indexOf(pair[1]) >= 0;
+  });
+  // Load existing photos in edit mode
+  if (visits.photos) {
+    try {
+      var savedPhotos = JSON.parse(visits.photos);
+      for (var key in savedPhotos) {
+        photoData[key] = savedPhotos[key];
+        var el = document.getElementById("photo-"+key);
+        if (el) {
+          el.innerHTML = "<img src=\""+savedPhotos[key]+"\"><div class=\"check\">✓</div>";
+          el.classList.add("has-photo");
+        }
+      }
+    } catch(e) {}
+  }
+  showToast("✏️ 编辑模式，修改后点保存");
+}
+async function renderAdminWorkerDetail(phone) {
+  var allU = await dbAction("users","readonly",function(s,ok){var r=s.getAll();r.onsuccess=function(){ok(r.result||[]);};});
+  var worker = null;
+  for (var i=0;i<allU.length;i++) { if (allU[i].phone===phone) { worker=allU[i]; break; } }
+  if (!worker) { showToast("员工不存在"); return; }
+  document.getElementById("pageTitle").textContent = worker.name + " 的详情";
+  document.getElementById("backBtn").classList.add("show");
+  currentPage = "worker-detail";
+  var visits = await dbAction("visits","readonly",function(s,ok){var idx=s.index("phone");var r=idx.getAll(IDBKeyRange.only(phone));r.onsuccess=function(){ok(r.result||[]);};});
+  var checkins = await dbAction("checkins","readonly",function(s,ok){var idx=s.index("phone");var r=idx.getAll(IDBKeyRange.only(phone));r.onsuccess=function(){ok(r.result||[]);};});
+  var today = new Date().toISOString().split("T")[0];
+  var tV = visits.filter(function(v){return v.date===today;});
+  var tP = visits.reduce(function(s,v){return s+(v.earnings||0);},0);
+  var html = "<div class=\"card\"><h3>员工详情</h3><div style=\"font-size:13px;line-height:2\"><strong>姓名：</strong>"+worker.name+"<br><strong>手机：</strong>"+worker.phone+"<br><strong>累计陌拜：</strong>"+visits.length+"家<br><strong>今日陌拜：</strong>"+tV.length+"家<br><strong>累计收入：</strong>¥"+tP.toFixed(2)+"</div></div>";
+  html += "<div class=\"card\"><h3>签到记录</h3>";
+  checkins.sort(function(a,b){return b.date.localeCompare(a.date);}).forEach(function(ch){
+    var loc = ch.location ? (ch.location.lat.toFixed(4)+","+ch.location.lng.toFixed(4)) : "无位置";
+    html += "<div style=\"font-size:11px;padding:4px 0;border-bottom:1px solid #f0f0f0\">"+ch.date+" "+ch.time+" <span style=\"color:#888\">"+loc+"</span></div>";
+  });
+  html += "</div><div class=\"card\"><h3>陌拜记录</h3>";
+  visits.sort(function(a,b){return b.timestamp.localeCompare(a.timestamp);}).forEach(function(v){
+    html += "<div class=\"visit-item\" style=\"margin-bottom:6px;padding:10px\"><div class=\"v-name\">"+(v.surname||"")+"总·"+escHtml(v.storeName)+"</div><div class=\"v-meta\"><span>¥"+(v.earnings||0).toFixed(1)+"</span><span>"+v.date+"</span></div></div>";
+  });
+  html += "</div>";
+  document.getElementById("mainContent").innerHTML = html;
+}
+// ====== Init ======
+async function init() {
+  // Show login page immediately, init DB in background
+  document.getElementById("splash").classList.add("hide");
+  document.getElementById("auth-page").classList.add("active");
+  try {
+    db = await openDB();
+    // Set default admin invitation code
+    try {
+      var existingCode = await dbAction('adminCodes', 'readonly', function(s, ok) {
+        var r = s.get('admin2024'); r.onsuccess = function() { ok(r.result); };
+      });
+      if (!existingCode) {
+        await dbAction('adminCodes', 'readwrite', function(s) { s.add({code:'admin2024',createdAt:new Date().toISOString()}); });
+      }
+    } catch(e) {}
+    // Auto-login from saved session
+    var savedUser = localStorage.getItem('mobai_user');
+    // Also hide splash again just in case
+    var s2 = document.getElementById("splash");
+    if (s2) s2.classList.add("hide");
+    if (savedUser) {
+      try {
+        var su = JSON.parse(savedUser);
+        var user = await dbAction('users', 'readonly', function(s, ok) {
+          var r = s.get(su.phone); r.onsuccess = function() { ok(r.result); };
+        });
+        if (user) {
+          currentUser = user;
+          document.getElementById('splash').classList.add('hide');
+          document.getElementById('auth-page').classList.remove('active');
+          document.getElementById('main-layout').classList.add('active');
+          document.getElementById('userName').textContent = user.name;
+          document.getElementById('userRole').textContent = user.role==='admin'?'管理者':'陌拜员';
+          renderHome(); return;
+        }
+      } catch(e) {}
+    }
+    document.getElementById('splash').classList.add('hide');
+  } catch(e) {
+    document.getElementById('splash').classList.add('hide');
+    showToast('数据库打开失败: '+e.message);
+  }
+}
+}
+
+init();
+</script>
 </body>
 </html>
