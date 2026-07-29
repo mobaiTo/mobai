@@ -1,0 +1,12 @@
+﻿<!DOCTYPE html>
+<html>
+<head><meta charset="UTF-8"><title>实体测试</title></head>
+<body>
+<h1>HTML实体测试</h1>
+<p id="status">检测中...</p>
+<script>
+var escHtml = function(s){return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");};
+document.getElementById("status").innerHTML = "✅ 实体函数正常：" + escHtml("<test&>");
+</script>
+</body>
+</html>
