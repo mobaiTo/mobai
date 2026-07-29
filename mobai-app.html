@@ -601,7 +601,7 @@ function renderVisitForm() {
 function takePhoto(slot, fromCamera) {
   var input = document.createElement('input');
   input.type = 'file';
-  input.accept = 'image/*';
+  input.accept = 'image/*,video/*';
   if (fromCamera === true) input.capture = 'environment';
   input.onchange = function(e) {
     var file = e.target.files[0];
@@ -1077,7 +1077,7 @@ function showPostModal() {
 var postImages = [];
 function addPostImage() {
   var input = document.createElement('input');
-  input.type = 'file'; input.accept = 'image/*'; input.multiple = true;
+  input.type = 'file'; input.accept = 'image/*,video/*'; input.multiple = true;
   input.onchange = function(e) {
     for (var i = 0; i < e.target.files.length; i++) {
       var reader = new FileReader();
@@ -1241,8 +1241,14 @@ function submitComment(postId) {
 function showFullImage(src) {
   var o = document.createElement("div");
   o.style.cssText = "position:fixed;inset:0;background:rgba(0,0,0,.9);z-index:9999;display:flex;align-items:center;justify-content:center;cursor:pointer";
-  o.innerHTML = "<img src='"+src+"' style='max-width:95%;max-height:95%;border-radius:8px'><div style='position:absolute;top:20px;right:20px;color:#fff;font-size:30px;cursor:pointer' onclick='this.parentElement.remove()'>X</div>";
-  o.onclick = function() { o.remove(); };
+  var ext = src.split(".").pop().toLowerCase();
+  var isVideo = ["mp4","webm","ogg","mov","avi","mkv"].indexOf(ext) >= 0;
+  if (isVideo) {
+    o.innerHTML = "<video src='"+src+"' style='max-width:95%;max-height:95%;border-radius:8px' controls autoplay></video><div style='position:absolute;top:20px;right:20px;color:#fff;font-size:30px;cursor:pointer' onclick='this.parentElement.remove()'>X</div>";
+  } else {
+    o.innerHTML = "<img src='"+src+"' style='max-width:95%;max-height:95%;border-radius:8px'><div style='position:absolute;top:20px;right:20px;color:#fff;font-size:30px;cursor:pointer' onclick='this.parentElement.remove()'>X</div>";
+  }
+  o.onclick = function(e) { if(e.target===o) o.remove(); };
   document.body.appendChild(o);
 }
 function downloadFile(src, name) {
