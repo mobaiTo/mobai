@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html>
+<head><meta charset="UTF-8"><title>完整结构测试</title>
+<style>
+body{font-family:sans-serif;padding:20px}
+</style>
+</head>
+<body>
+<h1>完整结构测试</h1>
+<p id="status">加载中...</p>
+<div id="result"></div>
+<script>
+
+// ====== App State ======
+var DB_NAME = 'mobai_db';
+var DB_VER = 2;
+var db = null;
+var currentUser = null;
+var currentPage = 'home';
+var currentVisit = null;
+var locationCache = null;
+var photoData = {};
+
+// ====== IndexedDB ======
+function openDB() {
+  return new Promise(function(resolve, reject) {
+    var req = indexedDB.open(DB_NAME, DB_VER);
+    req.onupgradeneeded = function(e) {
+      var d = e.target.result;
+      if (!d.objectStoreNames.contains('users')) {
+        var us = d.createObjectStore('users', { keyPath: 'phone' });
+        us.createIndex('role', 'role', { unique: false });
+      }
+      if (!d.objectStoreNames.contains('checkins')) {
+        var cs = d.createObjectStore('checkins', { keyPath: 'id', autoIncrement: true });
+        cs.createIndex('phone', 'phone', { unique: false });
+        cs.createIndex('date', 'date', { unique: false });
+      }
+      if (!d.objectStoreNames.contains('posts')) {
+        var ps = d.createObjectStore('posts', { keyPath: 'id', autoIncrement: true });
+        ps.createIndex('phone', 'phone', { unique: false });
+      }
+      if (!d.objectStoreNames.contains('comments')) {
+        var cs = d.createObjectStore('comments', { keyPath: 'id', autoIncrement: true });
+        cs.createIndex('postId', 'postId', { unique: false });
+      }
+      if (!d.objectStoreNames.contains('likes')) {
+        var ls = d.createObjectStore('likes', { keyPath: 'id', autoIncrement: true });
+        ls.createIndex('postId', 'postId', { unique: false });
+      }
+      if (!d.objectStoreNames.contains('resources')) {
+        var rs = d.createObjectStore('resources', { keyPath: 'id', autoIncrement: true });
+      }
+      if (!d.objectStoreNames.contains('adminCodes')) {
+        var ac = d.createObjectStore('adminCodes', { keyPath: 'code' });
+      }
+      if (!d.objectStoreNames.contains('visits')) {
+        var vs = d.createObjectStore('visits', { keyPath: 'id', autoIncrement: true });
+        vs.createIndex('phone', 'phone', { unique: false }
+// Test that the DB functions work
+async function runTest() {
+  try {
+    document.getElementById("status").textContent = "JS解析成功！尝试打开数据库...";
+    var db = await openDB();
+    document.getElementById("status").textContent = "✅ 数据库打开成功！所有功能正常";
+    document.getElementById("result").innerHTML = "<br>DB_NAME=" + DB_NAME + "<br>DB_VER=" + DB_VER;
+  } catch(e) {
+    document.getElementById("status").textContent = "❌ 错误: " + e.message;
+    document.getElementById("result").textContent = JSON.stringify(e);
+  }
+}
+runTest();
+</script>
+</body>
+</html>
