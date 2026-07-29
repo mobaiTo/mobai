@@ -673,12 +673,9 @@ async function saveVisit() {
       }
     }
     if (dup) {
-      if (!confirm("⚠️ 该店铺已被 "+dup.userName+" 于 "+dup.date+" 陌拜过！\n继续保存将不计酬劳。确定保存吗？")) { return; }
+      if (!confirm("⚠️ 该店铺已被 "+dup.userName+" 于 "+dup.date+" 陌拜过！继续保存将不计酬劳。确定保存吗？")) { showToast("已取消保存"); return; }
       // Force earnings to 0 for duplicate
-      setTimeout(function(){
-        var payEl = document.getElementById("payPreview");
-        if (payEl) { payEl.innerHTML = "⚠️ 重复店铺，酬劳为 0 元"; payEl.style.background="#f8d7da"; payEl.style.color="#721c24"; }
-      }, 100);
+      currentEditId = "dup_" + Date.now(); // Mark as duplicate
     }
   }
   var name = document.getElementById('v-name').value.trim();
