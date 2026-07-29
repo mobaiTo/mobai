@@ -1381,6 +1381,7 @@ async function renderAdminWorkerDetail(phone) {
   html += "</div>";
   document.getElementById("mainContent").innerHTML = html;
 }
+}
 // ====== Init ======
 async function init() {
   // Show login page immediately, init DB in background
@@ -1424,7 +1425,6 @@ async function init() {
     document.getElementById('splash').classList.add('hide');
     showToast('数据库打开失败: '+e.message);
   }
-}
 }
 
 init();
