@@ -845,7 +845,7 @@ function logout() {
 }
 
 // ====== Admin Dashboard ======
-async function renderAdmin() {
+async window.renderAdmin = function() {
   var content = document.getElementById('mainContent');
   if (currentUser.role !== 'admin') {
     content.innerHTML = '<div class="empty-state"><div class="icon">🔒</div><p>仅管理者可访问</p></div>';
@@ -941,7 +941,7 @@ async function renderAdmin() {
 }
 
 
-async function adminFilter(type) {
+async window.adminFilter = function(type) {
   document.getElementById("pageTitle").textContent = {all:"\u7d2f\u8ba1\u964c\u62dc",today:"\u4eca\u65e5\u964c\u62dc",checkins:"\u7b7e\u5230\u8bb0\u5f55",workers:"\u964c\u62dc\u5458"}[type]||"\u7ba1\u7406\u540e\u53f0";
   document.getElementById("backBtn").classList.add("show");
   currentPage = "admin-filter";
@@ -986,7 +986,7 @@ async function adminFilter(type) {
   }
   document.getElementById("mainContent").innerHTML = html;
 }
-async function showExpense(type) {
+async window.showExpense = function(type) {
   document.getElementById("pageTitle").textContent = type==="all"?"\u603b\u652f\u51fa":"\u4eca\u65e5\u652f\u51fa";
   document.getElementById("backBtn").classList.add("show");
   currentPage = "admin-filter";
@@ -1011,7 +1011,7 @@ function viewWorker(phone) {
 }
 
 // ====== Moments (Social Feed) ======
-async function renderMoments() {
+async window.renderMoments = function() {
   var content = document.getElementById("mainContent");
   var posts = await dbAction("posts","readonly",function(s,ok){var r=s.getAll();r.onsuccess=function(){ok((r.result||[]).sort(function(a,b){return b.timestamp.localeCompare(a.timestamp);}));};});
   var comments = await dbAction("comments","readonly",function(s,ok){var r=s.getAll();r.onsuccess=function(){ok(r.result||[]);};});
@@ -1145,7 +1145,7 @@ function showComment2(postId) {
 }
 
 // ====== Library (Resources) ======
-async function renderLibrary() {
+async window.renderLibrary = function() {
   var content = document.getElementById("mainContent");
   var resources = await dbAction("resources","readonly",function(s,ok){var r=s.getAll();r.onsuccess=function(){ok((r.result||[]).sort(function(a,b){return b.timestamp.localeCompare(a.timestamp);}));};});
   var html = "<div class=\"card\"><h3>📚 学习资料库</h3><p style=\"font-size:11px;color:#888\">管理者上传的项目资料，供团队成员学习查看</p></div>";
@@ -1231,14 +1231,14 @@ async function submitLibResource() {
   var title = document.getElementById("res-title").value.trim();
   
 
-function submitComment(postId) {
+window.submitComment = function(postId) {
   var input = document.getElementById("comment-input-"+postId);
   if (!input||!input.value.trim()) return;
   var text = input.value.trim(); input.value = "";
   dbAction("comments","readwrite",function(s){s.add({postId:postId,phone:currentUser.phone,userName:currentUser.name,text:text,timestamp:new Date().toISOString()});}).then(function(){renderMoments();});
 }
 
-function showFullImage(src) {
+window.showFullImage = function(src) {
   var o = document.createElement("div");
   o.style.cssText = "position:fixed;inset:0;background:rgba(0,0,0,.9);z-index:9999;display:flex;align-items:center;justify-content:center;cursor:pointer";
   var ext = src.split(".").pop().toLowerCase();
@@ -1251,14 +1251,14 @@ function showFullImage(src) {
   o.onclick = function(e) { if(e.target===o) o.remove(); };
   document.body.appendChild(o);
 }
-function downloadFile(src, name) {
+window.downloadFile = function(src, name) {
   var a = document.createElement("a"); a.href = src; a.download = name || "download"; a.click();
 }
-function filterRecords(type) {
+window.filterRecords = function(type) {
   currentPage = "filtered-records";
   renderFilteredRecords(type);
 }
-async function renderFilteredRecords(type) {
+window.renderFilteredRecords = async function(type) {
   document.getElementById("pageTitle").textContent = {all:"全部记录",today:"今日陌拜",week:"本周陌拜",lastweek:"上周陌拜",month:"本月陌拜",lastmonth:"上月陌拜"}[type]||"陌拜记录";
   document.getElementById("backBtn").classList.add("show");
   var allVisits = await dbAction("visits","readonly",function(s,ok){var r=s.getAll();r.onsuccess=function(){ok(r.result||[]);};});
@@ -1304,7 +1304,7 @@ async function renderFilteredRecords(type) {
   document.getElementById("mainContent").innerHTML = html;
 }
 var currentEditId = null;
-async function editVisit(id) {
+window.editVisit = async function(id) {
   currentEditId = id;
   switchTab("visit");
   // Wait for form to render, then fill fields
