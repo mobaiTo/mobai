@@ -1231,7 +1231,7 @@ async function submitLibResource() {
   var title = document.getElementById("res-title").value.trim();
   
 
-window.submitComment = function(postId) {
+function submitComment(postId) {
   var input = document.getElementById("comment-input-"+postId);
   if (!input||!input.value.trim()) return;
   var text = input.value.trim(); input.value = "";
@@ -1254,11 +1254,11 @@ function showFullImage(src) {
 function downloadFile(src, name) {
   var a = document.createElement("a"); a.href = src; a.download = name || "download"; a.click();
 }
-window.filterRecords = function(type) {
+function filterRecords(type) {
   currentPage = "filtered-records";
   renderFilteredRecords(type);
 }
-window.renderFilteredRecords = async function(type) {
+async function renderFilteredRecords(type) {
   document.getElementById("pageTitle").textContent = {all:"全部记录",today:"今日陌拜",week:"本周陌拜",lastweek:"上周陌拜",month:"本月陌拜",lastmonth:"上月陌拜"}[type]||"陌拜记录";
   document.getElementById("backBtn").classList.add("show");
   var allVisits = await dbAction("visits","readonly",function(s,ok){var r=s.getAll();r.onsuccess=function(){ok(r.result||[]);};});
@@ -1304,7 +1304,7 @@ window.renderFilteredRecords = async function(type) {
   document.getElementById("mainContent").innerHTML = html;
 }
 var currentEditId = null;
-window.editVisit = async function(id) {
+async function editVisit(id) {
   currentEditId = id;
   switchTab("visit");
   // Wait for form to render, then fill fields
